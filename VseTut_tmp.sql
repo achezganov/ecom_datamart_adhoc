@@ -10,6 +10,66 @@
  * Напишите ниже запрос для создания витрины данных
 */
 
+--CREATE TABLE ds_ecom.data_mart AS
+WITH user_info AS
+    (
+        SELECT
+            *,
+            last_order_ts - first_order_ts AS lifetime
+        FROM (
+            SELECT
+                u.user_id,
+                u.region,
+                FIRST_VALUE(o.order_purchase_ts) OVER (PARTITION BY u.user_id)    AS first_order_ts,
+                LAST_VALUE(o.order_purchase_ts) OVER (PARTITION BY u.user_id
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)     AS last_order_ts
+            FROM ds_ecom.users      AS u
+                JOIN ds_ecom.orders AS o USING (buyer_id)
+            ) AS user_info_base
+    ),
+    user_stats AS
+    (
+        SELECT
+            u.user_id,
+            COUNT(o.order_id)                                                              AS total_orders,
+            AVG(ro.review_score) FILTER (WHERE ro.review_id IS NOT NULL)                   AS avg_order_rating,
+            COUNT(review_id)                                                               AS num_orders_with_rating,
+            COUNT(order_status) FILTER (WHERE o.order_status = 'Отменено')                 AS num_canceled_orders,
+            ROUND(COUNT(order_status)
+                  FILTER (WHERE o.order_status = 'Отменено') / COUNT(*)::numeric, 4) * 100 AS canceled_order_ratio
+        FROM ds_ecom.users                  AS u
+            JOIN ds_ecom.orders             AS o USING (buyer_id)
+            LEFT JOIN ds_ecom.order_reviews AS ro USING (order_id)
+        WHERE o.order_status IN ('Отменено', 'Доставлено')
+        GROUP BY u.user_id
+    ),
+    purchases_info AS
+    (
+        SELECT
+            user_id,
+            SUM(order_cost) FILTER ( WHERE order_status = 'Доставлено' ) AS total_order_costs,
+            AVG(order_cost) AS avg_order_cost,
+            -- поле: кол-во заказов в рассрочку
+            -- поле: кол-во заказов с промокодами
+
+        FROM (
+            SELECT
+                u.user_id,
+                order_id,
+                SUM(oi.price) OVER (PARTITION BY o.order_id) AS order_cost,
+                order_status,
+                payment_type -- обработать
+            FROM ds_ecom.users              AS u
+                JOIN ds_ecom.orders         AS o USING (buyer_id)
+                JOIN ds_ecom.order_items    AS oi USING (order_id)
+                JOIN ds_ecom.order_payments AS op USING (order_id)) AS purchases_base
+    )
+    -- бинарные признаки
+SELECT *
+FROM user_info
+    JOIN user_stats USING(user_id)
+
+-- проверить фильтрацию
 
 
 /* Часть 2. Решение ad hoc задач
