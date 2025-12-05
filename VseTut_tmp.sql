@@ -11,65 +11,125 @@
 */
 
 --CREATE TABLE ds_ecom.data_mart AS
-WITH user_info AS
+WITH top_regions AS -- определяю топ-3 региона по количеству заказов
     (
         SELECT
-            *,
-            last_order_ts - first_order_ts AS lifetime
+            region
         FROM (
             SELECT
-                u.user_id,
                 u.region,
-                FIRST_VALUE(o.order_purchase_ts) OVER (PARTITION BY u.user_id)    AS first_order_ts,
-                LAST_VALUE(o.order_purchase_ts) OVER (PARTITION BY u.user_id
-                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)     AS last_order_ts
-            FROM ds_ecom.users      AS u
-                JOIN ds_ecom.orders AS o USING (buyer_id)
-            ) AS user_info_base
+                COUNT(DISTINCT o.order_id)                                    AS order_count,
+                ROW_NUMBER() OVER (ORDER BY COUNT(DISTINCT  o.order_id) DESC) AS rank
+            FROM ds_ecom.orders    AS o
+                JOIN ds_ecom.users AS u USING (buyer_id)
+            WHERE o.order_status IN ('Доставлено', 'Отменено')
+            GROUP BY u.region
+             ) AS ranked_regions
+        WHERE rank <= 3
     ),
-    user_stats AS
+    filtered_orders AS -- фильтрую заказы. Топ-3 региона и нужные статусы
     (
         SELECT
+            o.order_id,
             u.user_id,
-            COUNT(o.order_id)                                                              AS total_orders,
-            AVG(ro.review_score) FILTER (WHERE ro.review_id IS NOT NULL)                   AS avg_order_rating,
-            COUNT(review_id)                                                               AS num_orders_with_rating,
-            COUNT(order_status) FILTER (WHERE o.order_status = 'Отменено')                 AS num_canceled_orders,
-            ROUND(COUNT(order_status)
-                  FILTER (WHERE o.order_status = 'Отменено') / COUNT(*)::numeric, 4) * 100 AS canceled_order_ratio
-        FROM ds_ecom.users                  AS u
-            JOIN ds_ecom.orders             AS o USING (buyer_id)
-            LEFT JOIN ds_ecom.order_reviews AS ro USING (order_id)
-        WHERE o.order_status IN ('Отменено', 'Доставлено')
-        GROUP BY u.user_id
+            u.region,
+            o.order_status,
+            o.order_purchase_ts
+        FROM ds_ecom.orders    AS o
+            JOIN ds_ecom.users AS u USING (buyer_id)
+        WHERE u.region IN (SELECT region FROM top_regions) AND o.order_status IN ('Доставлено', 'Отменено')
     ),
-    purchases_info AS
+    order_cost AS -- вынес подсчет итоговой стоимости + учитываю стоимость доставки
+    (
+        -- [!!!] проверить фильтрацию
+        SELECT
+            order_id,
+            SUM(price + delivery_cost) AS order_total_cost
+        FROM ds_ecom.order_items
+        GROUP BY order_id
+    ),
+    order_ratings AS -- аналогично вынес рейтинги для нужных заказов
     (
         SELECT
-            user_id,
-            SUM(order_cost) FILTER ( WHERE order_status = 'Доставлено' ) AS total_order_costs,
-            AVG(order_cost) AS avg_order_cost,
-            -- поле: кол-во заказов в рассрочку
-            -- поле: кол-во заказов с промокодами
+            fo.order_id,
+            ro.review_score
+        FROM filtered_orders                AS fo
+            LEFT JOIN ds_ecom.order_reviews AS ro USING (order_id)
+    ),
+    payment_info AS
+    (
+        -- [!!!] Проверить фильтрацию
+        SELECT
+            order_id,
+            MAX(CASE WHEN (payment_type = 'денежный перевод' OR payment_type = 'банковская карта')
+                AND payment_sequential = 1 THEN 1 ELSE 0 END)               AS used_money_transfer,
+            MAX(CASE WHEN payment_installments > 1 THEN 1 ELSE 0 END)       AS used_installments,
+            MAX(CASE WHEN payment_type = 'промокод'THEN 1 ElSE 0 END)       AS used_promocode
 
-        FROM (
-            SELECT
-                u.user_id,
-                order_id,
-                SUM(oi.price) OVER (PARTITION BY o.order_id) AS order_cost,
-                order_status,
-                payment_type -- обработать
-            FROM ds_ecom.users              AS u
-                JOIN ds_ecom.orders         AS o USING (buyer_id)
-                JOIN ds_ecom.order_items    AS oi USING (order_id)
-                JOIN ds_ecom.order_payments AS op USING (order_id)) AS purchases_base
+        FROM ds_ecom.order_payments
+        GROUP BY order_id
+    ),
+    user_info_stats AS ( -- предварительный сбор по пользователю и региону
+        SELECT
+            -- основная агрегация
+            fo.user_id,
+            fo.region,
+
+            -- временная активность
+            MIN(fo.order_purchase_ts)                                               AS first_order_ts,
+            MAX(fo.order_purchase_ts)                                               AS last_order_ts,
+            EXTRACT(day FROM MAX(fo.order_purchase_ts) - MIN(fo.order_purchase_ts)) AS lifetime,
+
+            -- информация о заказах
+            COUNT(DISTINCT fo.order_id)                                             AS total_orders,
+            COUNT(DISTINCT CASE WHEN ro.review_score IS NOT NULL
+                THEN fo.order_id END)                                               AS num_orders_with_rating,
+            AVG(ro.review_score) AS avg_order_rating, -- игнорирует null
+            COUNT(DISTINCT CASE WHEN fo.order_status = 'Отменено'
+                THEN fo.order_id END)                                               AS num_canceled_orders,
+
+            -- инфрмация о платежах
+            SUM(CASE WHEN fo.order_status = 'Доставлено'
+                THEN oc.order_total_cost ELSE 0 END)                                AS total_order_costs,
+            COUNT(DISTINCT CASE WHEN pi.used_installments = 1
+                THEN fo.order_id END)                                               AS num_installment_orders,
+            COUNT(DISTINCT CASE WHEN pi.used_promocode = 1
+                THEN fo.order_id END)                                               AS num_orders_with_promo,
+
+            -- бинарные признаки
+            MAX(pi.used_money_transfer)                                             AS used_money_transfer,
+            MAX(pi.used_installments)                                               AS used_installments,
+            MAX(CASE WHEN fo.order_status = 'Отменено'
+                THEN 1 ELSE 0 END)                                                  AS used_cancel
+
+        FROM filtered_orders        AS fo
+            LEFT JOIN order_ratings AS ro USING (order_id)
+            LEFT JOIN order_cost    AS oc USING (order_id)
+            LEFT JOIN payment_info  AS pi USING (order_id)
+        GROUP BY fo.user_id, fo.region
     )
-    -- бинарные признаки
-SELECT *
-FROM user_info
-    JOIN user_stats USING(user_id)
+SELECT
+    user_id,
+    region,
+    first_order_ts,
+    last_order_ts,
+    COALESCE(lifetime, 0)                                 AS lifetime,
+    total_orders,
+    COALESCE(ROUND(avg_order_rating::numeric, 2), -1)     AS avg_order_rating, -- -1 значит не оценивал
+    num_orders_with_rating,
+    num_canceled_orders,
+    ROUND(num_canceled_orders::numeric / total_orders, 2) AS canceled_orders_ratio,
+    ROUND(total_order_costs::numeric, 2)                  AS total_order_costs,
+    ROUND(total_order_costs::numeric / total_orders, 2)   AS avg_order_cost,
+    num_installment_orders,
+    num_orders_with_promo,
+    COALESCE(used_money_transfer, 0)                      AS used_money_transfer,
+    COALESCE(used_installments, 0)                        AS used_installments,
+    COALESCE(used_cancel, 0)                              AS used_cancel
+FROM user_info_stats;
 
--- проверить фильтрацию
+-- позаботился о замене null'ов, тк dm для модели.
+-- tid: 01f2285f85a1c603eb7ef755ad311769
 
 
 /* Часть 2. Решение ad hoc задач
