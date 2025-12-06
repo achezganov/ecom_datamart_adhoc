@@ -10,7 +10,7 @@
  * Напишите ниже запрос для создания витрины данных
 */
 
---CREATE TABLE ds_ecom.data_mart AS
+--CREATE TABLE ds_ecom.product_user_features AS
 WITH top_regions AS -- определяю топ-3 региона по количеству заказов
     (
         SELECT
@@ -41,7 +41,6 @@ WITH top_regions AS -- определяю топ-3 региона по коли�
     ),
     order_cost AS -- вынес подсчет итоговой стоимости + учитываю стоимость доставки
     (
-        -- [!!!] проверить фильтрацию
         SELECT
             order_id,
             SUM(price + delivery_cost) AS order_total_cost
@@ -58,13 +57,12 @@ WITH top_regions AS -- определяю топ-3 региона по коли�
     ),
     payment_info AS
     (
-        -- [!!!] Проверить фильтрацию
         SELECT
             order_id,
-            MAX(CASE WHEN (payment_type = 'денежный перевод' OR payment_type = 'банковская карта')
-                AND payment_sequential = 1 THEN 1 ELSE 0 END)               AS used_money_transfer,
-            MAX(CASE WHEN payment_installments > 1 THEN 1 ELSE 0 END)       AS used_installments,
-            MAX(CASE WHEN payment_type = 'промокод'THEN 1 ElSE 0 END)       AS used_promocode
+            MAX( CASE WHEN (payment_type = 'денежный перевод' OR payment_type = 'банковская карта')
+                AND payment_sequential = 1 THEN 1 ELSE 0 END )                AS used_money_transfer,
+            MAX( CASE WHEN payment_installments > 1 THEN 1 ELSE 0 END )       AS used_installments,
+            MAX( CASE WHEN payment_type = 'промокод'THEN 1 ElSE 0 END )       AS used_promocode
 
         FROM ds_ecom.order_payments
         GROUP BY order_id
@@ -76,31 +74,31 @@ WITH top_regions AS -- определяю топ-3 региона по коли�
             fo.region,
 
             -- временная активность
-            MIN(fo.order_purchase_ts)                                               AS first_order_ts,
-            MAX(fo.order_purchase_ts)                                               AS last_order_ts,
-            EXTRACT(day FROM MAX(fo.order_purchase_ts) - MIN(fo.order_purchase_ts)) AS lifetime,
+            MIN(fo.order_purchase_ts)                                                 AS first_order_ts,
+            MAX(fo.order_purchase_ts)                                                 AS last_order_ts,
+            EXTRACT( day FROM MAX(fo.order_purchase_ts) - MIN(fo.order_purchase_ts) ) AS lifetime,
 
             -- информация о заказах
-            COUNT(DISTINCT fo.order_id)                                             AS total_orders,
-            COUNT(DISTINCT CASE WHEN ro.review_score IS NOT NULL
-                THEN fo.order_id END)                                               AS num_orders_with_rating,
+            COUNT(DISTINCT fo.order_id)                                               AS total_orders,
+            COUNT( DISTINCT CASE WHEN ro.review_score IS NOT NULL
+                THEN fo.order_id END )                                                AS num_orders_with_rating,
             AVG(ro.review_score) AS avg_order_rating, -- игнорирует null
-            COUNT(DISTINCT CASE WHEN fo.order_status = 'Отменено'
-                THEN fo.order_id END)                                               AS num_canceled_orders,
+            COUNT( DISTINCT CASE WHEN fo.order_status = 'Отменено'
+                THEN fo.order_id END )                                                AS num_canceled_orders,
 
             -- инфрмация о платежах
-            SUM(CASE WHEN fo.order_status = 'Доставлено'
-                THEN oc.order_total_cost ELSE 0 END)                                AS total_order_costs,
-            COUNT(DISTINCT CASE WHEN pi.used_installments = 1
-                THEN fo.order_id END)                                               AS num_installment_orders,
-            COUNT(DISTINCT CASE WHEN pi.used_promocode = 1
-                THEN fo.order_id END)                                               AS num_orders_with_promo,
+            SUM( CASE WHEN fo.order_status = 'Доставлено'
+                THEN oc.order_total_cost ELSE 0 END )                                 AS total_order_costs,
+            COUNT( DISTINCT CASE WHEN pi.used_installments = 1
+                THEN fo.order_id END )                                                AS num_installment_orders,
+            COUNT( DISTINCT CASE WHEN pi.used_promocode = 1
+                THEN fo.order_id END )                                                AS num_orders_with_promo,
 
             -- бинарные признаки
-            MAX(pi.used_money_transfer)                                             AS used_money_transfer,
-            MAX(pi.used_installments)                                               AS used_installments,
-            MAX(CASE WHEN fo.order_status = 'Отменено'
-                THEN 1 ELSE 0 END)                                                  AS used_cancel
+            MAX(pi.used_money_transfer)                                               AS used_money_transfer,
+            MAX(pi.used_installments)                                                 AS used_installments,
+            MAX( CASE WHEN fo.order_status = 'Отменено'
+                THEN 1 ELSE 0 END )                                                   AS used_cancel
 
         FROM filtered_orders        AS fo
             LEFT JOIN order_ratings AS ro USING (order_id)
@@ -113,19 +111,19 @@ SELECT
     region,
     first_order_ts,
     last_order_ts,
-    COALESCE(lifetime, 0)                                 AS lifetime,
+    COALESCE(lifetime, 0)                                   AS lifetime,
     total_orders,
-    COALESCE(ROUND(avg_order_rating::numeric, 2), -1)     AS avg_order_rating, -- -1 значит не оценивал
+    COALESCE( ROUND(avg_order_rating::numeric, 2), -1 )     AS avg_order_rating, -- -1 значит не оценивал
     num_orders_with_rating,
     num_canceled_orders,
-    ROUND(num_canceled_orders::numeric / total_orders, 2) AS canceled_orders_ratio,
-    ROUND(total_order_costs::numeric, 2)                  AS total_order_costs,
-    ROUND(total_order_costs::numeric / total_orders, 2)   AS avg_order_cost,
+    ROUND(num_canceled_orders::numeric / total_orders, 2)   AS canceled_orders_ratio,
+    ROUND(total_order_costs::numeric, 2)                    AS total_order_costs,
+    ROUND(total_order_costs::numeric / total_orders, 2)     AS avg_order_cost,
     num_installment_orders,
     num_orders_with_promo,
-    COALESCE(used_money_transfer, 0)                      AS used_money_transfer,
-    COALESCE(used_installments, 0)                        AS used_installments,
-    COALESCE(used_cancel, 0)                              AS used_cancel
+    COALESCE(used_money_transfer, 0)                        AS used_money_transfer,
+    COALESCE(used_installments, 0)                          AS used_installments,
+    COALESCE(used_cancel, 0)                                AS used_cancel
 FROM user_info_stats;
 
 -- позаботился о замене null'ов, тк dm для модели.
@@ -149,10 +147,30 @@ FROM user_info_stats;
  * - 11 и более заказов — сегмент 11 и более заказов
 */
 
--- Напишите ваш запрос тут
+SELECT
+    segment,
+    COUNT(*)                        AS total_users,
+    ROUND( AVG(total_orders), 2 )   AS avg_orders_per_segment,
+    ROUND( AVG(avg_order_cost), 2 ) AS avg_order_cost_seg
+FROM (
+        SELECT
+            user_id,
+            total_orders,
+            avg_order_cost,
+            CASE
+                WHEN total_orders = 1 THEN '1 заказ'
+                WHEN total_orders BETWEEN 2 AND 5 THEN '2 - 5 заказов'
+                WHEN total_orders BETWEEN 6 AND 10 THEN '6 - 10 заказов'
+                WHEN total_orders >= 11 THEN '11+ заказов'
+            END AS segment
+        FROM ds_ecom.product_user_features
+     ) AS segmented
+GROUP BY segment;
 
 /* Напишите краткий комментарий с выводами по результатам задачи 1.
- * 
+ Большинство пользователей совершили только 1 заказ (60 468), также в этом сегменте высокая средняя стоимость заказа (3 324.08).
+ В сегменте (2-5) наблюдается сильный спад по количеству пользователей (1 934), средняя стоимость заказа удерживается. (3 091.36)
+ Остальные сегменты сохраняют общую тенденцию: Чем больше заказов, тем в сегменте меньше клиентов и средний чек также становится меньше.
 */
 
 
@@ -162,10 +180,19 @@ FROM user_info_stats;
  * Выведите 15 пользователей с самым большим средним чеком среди указанной группы.
 */
 
--- Напишите ваш запрос тут
+SELECT
+    user_id,
+    region,
+    total_orders,
+    avg_order_cost
+FROM ds_ecom.product_user_features
+WHERE total_orders >= 3
+ORDER BY avg_order_cost DESC
+LIMIT 15;
 
 /* Напишите краткий комментарий с выводами по результатам задачи 2.
- * 
+ Топ-15 покупателей преимущественно находятся в Москве. Средний чек сильно превышается, ~3-3.5 раза.
+ При этом, количество заказов небольшое, 3-5 заказов.
 */
 
 
@@ -179,12 +206,26 @@ FROM user_info_stats;
  * - долю пользователей, совершивших отмену заказа хотя бы один раз.
 */
 
--- Напишите ваш запрос тут
+SELECT
+    region,
+    COUNT(*)                                                                      AS total_users,
+    SUM(total_orders)                                                             AS total_orders,
+    ROUND( AVG(avg_order_cost), 2 )                                               AS avg_order_cost,
+    ROUND( SUM(num_installment_orders)::numeric / SUM(total_orders), 2 )          AS installment_order_ratio,
+    ROUND( SUM(num_orders_with_promo)::numeric / SUM(total_orders), 2 )           AS promo_orders_ratio,
+    ROUND( COUNT( CASE WHEN used_cancel = 1 THEN 1 END )::numeric / COUNT(*), 2 ) AS users_wt_cancel_ratio
+FROM ds_ecom.product_user_features
+GROUP BY region
+ORDER BY total_users DESC;
 
 /* Напишите краткий комментарий с выводами по результатам задачи 3.
- * 
+   В выводе я выделяю Москву и остальные регионы, так как у Петербурга и Новосибирской области показатели отличаются незначительно
+ Количество клиентов и, соответственно, заказов было совершено в Москве (39 386) и (40 747), что в 4 раза отличается от
+ двух других регионов по обоим показателям. Однако, средняя стоимость заказа отличается, на 13% меньше.
+   Количество отмен в Москве и Петербугре составляет 1%, в то время как в Новосибирской области близко к 0.
+   Доля пользователей промокодами составляет 4% стабильно во всех регионах.
+   В Москве меньше половины заказов без рассрочки (48%), в то время как Петербугре и Новосибирской области больше (54-55%)
 */
-
 
 
 /* Задача 4. Активность пользователей по первому месяцу заказа в 2023 году
@@ -196,7 +237,22 @@ FROM user_info_stats;
  * - среднюю продолжительность активности пользователя.
 */
 
--- Напишите ваш запрос тут
+SELECT
+    EXTRACT(month FROM first_order_ts)                                                    AS month,
+    COUNT(*)                                                                              AS new_users,
+    SUM(total_orders)                                                                     AS total_orders,
+    ROUND( AVG(avg_order_cost), 2 )                                                       AS avg_order_cost,
+    ROUND( AVG(avg_order_rating), 2 )                                                     AS avg_rating,
+    ROUND( COUNT( CASE WHEN used_money_transfer = 1 THEN 1 END )::numeric / COUNT(*), 2 ) AS money_used_ratio,
+    ROUND( AVG( EXTRACT(day FROM lifetime) ), 0 )                                         AS avg_lifetime_days
+FROM ds_ecom.product_user_features
+WHERE EXTRACT(year FROM first_order_ts) = 2023
+GROUP BY EXTRACT(month FROM first_order_ts)
+ORDER BY EXTRACT(month FROM first_order_ts)
 
 /* Напишите краткий комментарий с выводами по результатам задачи 4.
- * 
+ Группы пользователей по месяцам 2023 года демонстрируют рост числа новых клиентов с (465) в январе до (2 832) в октябре
+ при увеличении общего количества заказов с (499) до (2954). Средний чек колеблется в диапазоне примерно (2 580–3 310),
+ достигая максимума в сентябре, при стабильном высоком среднем рейтинге (4.14–4.32). Доля заказов с денежным переводом
+ держится на уровне (0.19–0.22), а средний lifetime по группам снижается с 13 дней в январе до 4–5 дней к осени.
+ */
