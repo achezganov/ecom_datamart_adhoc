@@ -51,7 +51,8 @@ WITH top_regions AS -- определяю топ-3 региона по коли�
     (
         SELECT
             fo.order_id,
-            ro.review_score
+            -- исправление: приведение данных к одному виду
+            CASE WHEN ro.review_score > 5 THEN ro.review_score / 10 ELSE ro.review_score END AS review_score
         FROM filtered_orders                AS fo
             LEFT JOIN ds_ecom.order_reviews AS ro USING (order_id)
     ),
@@ -59,7 +60,8 @@ WITH top_regions AS -- определяю топ-3 региона по коли�
     (
         SELECT
             order_id,
-            MAX( CASE WHEN (payment_type = 'денежный перевод' OR payment_type = 'банковская карта')
+            -- исправление: оставить только денежный перевод
+            MAX( CASE WHEN (payment_type = 'денежный перевод')
                 AND payment_sequential = 1 THEN 1 ELSE 0 END )                AS used_money_transfer,
             MAX( CASE WHEN payment_installments > 1 THEN 1 ELSE 0 END )       AS used_installments,
             MAX( CASE WHEN payment_type = 'промокод'THEN 1 ElSE 0 END )       AS used_promocode
@@ -76,7 +78,8 @@ WITH top_regions AS -- определяю топ-3 региона по коли�
             -- временная активность
             MIN(fo.order_purchase_ts)                                                 AS first_order_ts,
             MAX(fo.order_purchase_ts)                                                 AS last_order_ts,
-            EXTRACT( day FROM MAX(fo.order_purchase_ts) - MIN(fo.order_purchase_ts) ) AS lifetime,
+            -- исправление: выводим интервал
+            MAX(fo.order_purchase_ts) - MIN(fo.order_purchase_ts)                     AS lifetime,
 
             -- информация о заказах
             COUNT(DISTINCT fo.order_id)                                               AS total_orders,
@@ -111,7 +114,7 @@ SELECT
     region,
     first_order_ts,
     last_order_ts,
-    COALESCE(lifetime, 0)                                   AS lifetime,
+    lifetime                                                AS lifetime,
     total_orders,
     COALESCE( ROUND(avg_order_rating::numeric, 2), -1 )     AS avg_order_rating, -- -1 значит не оценивал
     num_orders_with_rating,
@@ -149,27 +152,39 @@ FROM user_info_stats;
 
 SELECT
     segment,
-    COUNT(*)                        AS total_users,
-    ROUND( AVG(total_orders), 2 )   AS avg_orders_per_segment,
-    ROUND( AVG(avg_order_cost), 2 ) AS avg_order_cost_seg
+    -- исправление: на уникальных пользователей
+    COUNT(DISTINCT user_id)                                       AS total_users,
+    ROUND( AVG(total_orders), 2 )                                 AS avg_orders_per_user,
+    -- считаем не среднее, а среднее взвешенное
+    ROUND(SUM(total_order_costs)::numeric / SUM(total_orders), 2) AS avg_order_cost_weighted
 FROM (
         SELECT
             user_id,
             total_orders,
-            avg_order_cost,
+            total_order_costs,
             CASE
-                WHEN total_orders = 1 THEN '1 заказ'
-                WHEN total_orders BETWEEN 2 AND 5 THEN '2 - 5 заказов'
+                WHEN total_orders = 1              THEN '1 заказ'
+                WHEN total_orders BETWEEN 2 AND 5  THEN '2 - 5 заказов'
                 WHEN total_orders BETWEEN 6 AND 10 THEN '6 - 10 заказов'
-                WHEN total_orders >= 11 THEN '11+ заказов'
+                WHEN total_orders >= 11            THEN '11+ заказов'
+                ELSE 'Неизвестно' -- добавляем обработку исключения
             END AS segment
         FROM ds_ecom.product_user_features
      ) AS segmented
-GROUP BY segment;
+GROUP BY segment
+-- добавлена сортировка
+ORDER BY
+    CASE segment
+        WHEN '1 заказ'        THEN 1
+        WHEN '2 - 5 заказов'  THEN 2
+        WHEN '6 - 10 заказов' THEN 3
+        WHEN '11+ заказов'    THEN 4
+        ELSE 5 -- соответственно для исключения, чтобы не нарушился порядок
+    END;
 
 /* Напишите краткий комментарий с выводами по результатам задачи 1.
- Большинство пользователей совершили только 1 заказ (60 468), также в этом сегменте высокая средняя стоимость заказа (3 324.08).
- В сегменте (2-5) наблюдается сильный спад по количеству пользователей (1 934), средняя стоимость заказа удерживается. (3 091.36)
+ Большинство пользователей совершили только 1 заказ (60 460), также в этом сегменте высокая средняя стоимость заказа (3 305.66).
+ В сегменте (2-5) наблюдается сильный спад по количеству пользователей (1 934), средняя стоимость заказа удерживается. (3 058.39)
  Остальные сегменты сохраняют общую тенденцию: Чем больше заказов, тем в сегменте меньше клиентов и средний чек также становится меньше.
 */
 
@@ -206,17 +221,19 @@ LIMIT 15;
  * - долю пользователей, совершивших отмену заказа хотя бы один раз.
 */
 
+-- повышена точность, добавлены %, used_cancel через AVG
 SELECT
     region,
-    COUNT(*)                                                                      AS total_users,
-    SUM(total_orders)                                                             AS total_orders,
-    ROUND( AVG(avg_order_cost), 2 )                                               AS avg_order_cost,
-    ROUND( SUM(num_installment_orders)::numeric / SUM(total_orders), 2 )          AS installment_order_ratio,
-    ROUND( SUM(num_orders_with_promo)::numeric / SUM(total_orders), 2 )           AS promo_orders_ratio,
-    ROUND( COUNT( CASE WHEN used_cancel = 1 THEN 1 END )::numeric / COUNT(*), 2 ) AS users_wt_cancel_ratio
+    COUNT(DISTINCT user_id)                                                               AS total_users,
+    SUM(total_orders)                                                                     AS total_orders,
+    ROUND(SUM(total_order_costs)::numeric / SUM(total_orders), 2)                         AS avg_order_cost,
+    ROUND(SUM(num_installment_orders)::numeric / SUM(total_orders) * 100, 2) || '%'       AS installment_order_ratio,
+    ROUND(SUM(num_orders_with_promo)::numeric / SUM(total_orders) * 100, 2) || '%'        AS promo_orders_ratio,
+    ROUND(AVG(used_cancel) * 100, 2) || '%'                                               AS users_wt_cancel_ratio
 FROM ds_ecom.product_user_features
 GROUP BY region
 ORDER BY total_users DESC;
+
 
 /* Напишите краткий комментарий с выводами по результатам задачи 3.
    В выводе я выделяю Москву и остальные регионы, так как у Петербурга и Новосибирской области показатели отличаются незначительно
@@ -236,10 +253,10 @@ ORDER BY total_users DESC;
  * - долю пользователей, использующих денежные переводы при оплате;
  * - среднюю продолжительность активности пользователя.
 */
-
+SET lc_time = 'ru_RU';
 SELECT
-    EXTRACT(month FROM first_order_ts)                                                    AS month,
-    COUNT(*)                                                                              AS new_users,
+    TO_CHAR(first_order_ts, 'TMMonth')                                                    AS month_name,
+    COUNT(DISTINCT user_id)                                                               AS new_users,
     SUM(total_orders)                                                                     AS total_orders,
     ROUND( AVG(avg_order_cost), 2 )                                                       AS avg_order_cost,
     ROUND( AVG(avg_order_rating), 2 )                                                     AS avg_rating,
@@ -247,7 +264,7 @@ SELECT
     ROUND( AVG( EXTRACT(day FROM lifetime) ), 0 )                                         AS avg_lifetime_days
 FROM ds_ecom.product_user_features
 WHERE EXTRACT(year FROM first_order_ts) = 2023
-GROUP BY EXTRACT(month FROM first_order_ts)
+GROUP BY EXTRACT(month FROM first_order_ts), TO_CHAR(first_order_ts, 'TMMonth')
 ORDER BY EXTRACT(month FROM first_order_ts)
 
 /* Напишите краткий комментарий с выводами по результатам задачи 4.
