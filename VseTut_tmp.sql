@@ -52,9 +52,10 @@ WITH top_regions AS -- определяю топ-3 региона по коли�
         SELECT
             fo.order_id,
             -- исправление: приведение данных к одному виду
-            CASE WHEN ro.review_score > 5 THEN ro.review_score / 10 ELSE ro.review_score END AS review_score
+            AVG( CASE WHEN ro.review_score > 5 THEN ro.review_score / 10 ELSE ro.review_score END ) AS review_score
         FROM filtered_orders                AS fo
             LEFT JOIN ds_ecom.order_reviews AS ro USING (order_id)
+        GROUP BY order_id
     ),
     payment_info AS
     (
